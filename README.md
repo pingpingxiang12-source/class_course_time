@@ -14,5 +14,3 @@
 - 前端：Vue3 + Vite + SheetJS(xlsx) + PDF解析库
 - 后端：FastAPI（Python）
 - 部署：Vercel / 服务器
-
-## 📁 项目目录结构
