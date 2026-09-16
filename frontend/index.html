@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>课表空闲时间统计工具</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin:12px 0;
+        }
+        th,td {
+            border:1px solid #aaa;
+            padding:8px 6px;
+            text-align:center;
+        }
+        th {
+            background-color:#f0f4f8;
+        }
+        .free-all{
+            background-color:#dcfce7;
+        }
+        .control-area{
+            margin:12px 0;
+        }
+        select{
+            padding:4px 8px;
+            font-size:14px;
+        }
+        button {
+            padding:6px 12px;
+            cursor:pointer;
+            background-color:#2563eb;
+            color:white;
+            border:none;
+            border-radius:4px;
+            margin:2px;
+        }
+        button:hover{
+            background-color:#1d4ed8;
+        }
+        button:disabled{
+            background-color:#94a3b8;
+            cursor:not-allowed;
+        }
+        .btn-danger{
+            background-color:#dc2626;
+        }
+        .btn-danger:hover{
+            background-color:#b91c1c;
+        }
+        .suggest-block{
+            margin-top:16px;
+            padding:10px;
+            border:1px solid #b8d8ff;
+            background:#f0f7ff;
+        }
+        .status-area{
+            margin:8px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>多人课表空闲时间统计</h1>
+
+    <!-- 隐藏的原生input -->
+    <input type="file" multiple id="fileInput" accept=".pdf" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;">
+    <input type="file" id="csvImportInput" accept=".csv" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;">
+
+    <button id="addPdfBtn">添加PDF</button>
+    <button id="clearAllBtn" class="btn-danger">清空已选文件</button>
+    <button id="parseBtn">开始解析PDF</button>
+    <button id="csvImportBtn">导入已导出CSV文件</button>
+    <button id="downloadBtn" style="display:none;margin-left:8px;">下载完整CSV结果</button>
+
+    <!-- 状态提示区：只放加载/成功/错误消息 -->
+    <div class="status-area" id="statusDom"></div>
+    <!-- 文件列表：仅展示已添加PDF，解析消息不会改动这里 -->
+    <div id="fileList"></div>
+
+    <!-- 周次选择控件，默认隐藏 -->
+    <div class="control-area" id="weekControl" style="display:none;">
+        <label>选择查看周次：</label>
+        <select id="weekSelect"></select>
+    </div>
+
+    <!-- 矩阵表格容器：竖=节次，横=周一~周日 -->
+    <div id="tableWrap" style="display:none;">
+        <h4 id="tableTitle">第1周空闲统计表</h4>
+        <table>
+            <thead>
+                <tr>
+                    <th>节次</th>
+                    <th>星期一</th>
+                    <th>星期二</th>
+                    <th>星期三</th>
+                    <th>星期四</th>
+                    <th>星期五</th>
+                    <th>星期六</th>
+                    <th>星期日</th>
+                </tr>
+            </thead>
+            <tbody id="statTableBody">
+            </tbody>
+        </table>
+        <!-- 班会推荐区域 -->
+        <div class="suggest-block">
+            <h4>全班都没有课的时间段（最适合开班会）</h4>
+            <div id="suggestText"></div>
+        </div>
+    </div>
+
+<script>
+const addPdfBtn = document.getElementById('addPdfBtn');
+const clearAllBtn = document.getElementById('clearAllBtn');
+const fileInput = document.getElementById('fileInput');
+const csvImportInput = document.getElementById('csvImportInput');
+const csvImportBtn = document.getElementById('csvImportBtn');
+
+const statusDom = document.getElementById('statusDom');
+const fileListDom = document.getElementById('fileList');
+const parseBtn = document.getElementById('parseBtn');
+const downloadBtn = document.getElementById('downloadBtn');
+const weekControl = document.getElementById('weekControl');
+const weekSelect = document.getElementById('weekSelect');
+const tableWrap = document.getElementById('tableWrap');
+const tableTitle = document.getElementById('tableTitle');
+const statTableBody = document.getElementById('statTableBody');
+const suggestText = document.getElementById('suggestText');
+
+// 固定顺序：包含周六周日
+const PERIODS = ['1-2','3-4','5-6','7-8','9-10','11-12'];
+const WEEK_DAYS = ['星期一','星期二','星期三','星期四','星期五','星期六','星期日'];
+
+// 全局状态：PDF文件列表，支持追加
+let pdfFileList = [];
+let resultBlob = null;
+// 内存保存解析后的全部数据：[{周次,星期,节次,有课人数,空闲人数,空闲名单},...]
+let allData = [];
+let maxWeek = 0;
+
+addPdfBtn.addEventListener('click', function(){
+    fileInput.click();
+})
+csvImportBtn.addEventListener('click',function(){
+    csvImportInput.click();
+})
+
+/** 重置全部页面状态：清空PDF列表、表格、csv导入结果，全部复原 */
+function resetAllState(){
+    pdfFileList = [];
+    resultBlob = null;
+    allData = [];
+    maxWeek = 0;
+
+    downloadBtn.style.display = "none";
+    weekControl.style.display = "none";
+    tableWrap.style.display = "none";
+    weekSelect.innerHTML = "";
+    statTableBody.innerHTML = "";
+    suggestText.innerText = "";
+    fileListDom.innerHTML = "";
+    statusDom.innerHTML = "";
+}
+
+// 【清空已选文件】按钮
+clearAllBtn.addEventListener('click', resetAllState);
+
+// 添加PDF：追加模式，增加同名去重
+fileInput.addEventListener('change',function(){
+    const newFiles = Array.from(fileInput.files);
+    if(newFiles.length === 0) return;
+
+    // 获取已经存在的文件名集合
+    const existNames = new Set(pdfFileList.map(f=>f.name));
+    const skipMessages = [];
+
+    for(const f of newFiles){
+        if(existNames.has(f.name)){
+            skipMessages.push(`⚠️ 文件「${f.name}」已存在，跳过重复项`);
+        }else{
+            pdfFileList.push(f);
+            existNames.add(f.name);
+        }
+    }
+
+    // 渲染提示
+    if(skipMessages.length>0){
+        statusDom.innerHTML = skipMessages.join("<br/>");
+    }else{
+        statusDom.innerHTML = "";
+    }
+
+    // 重新渲染列表UI
+    renderFileListUi();
+
+    // 清空原生input，下次可以继续选同一批/不同位置文件
+    fileInput.value = "";
+})
+
+/** 渲染已选PDF列表UI */
+function renderFileListUi(){
+    fileListDom.innerHTML = "<p style='font-size:13px;'>✅ 已添加PDF文件：</p>";
+    for(let i=0;i<pdfFileList.length;i++){
+        const p=document.createElement('p');
+        p.style.fontSize = "13px";     // 字体调小，你可以改成12px/14px
+        p.style.margin = "2px 0";      // 缩小行间距，避免条目占太高
+        p.innerText=`${i+1}. ${pdfFileList[i].name}`;
+        fileListDom.appendChild(p);
+    }
+}
+
+// 【导入CSV文件】事件
+csvImportInput.addEventListener('change',async function(){
+    resetAllState();
+    const file = csvImportInput.files[0];
+    if(!file) return;
+    statusDom.innerHTML = `<p>正在读取CSV文件……</p>`;
+    fileListDom.innerHTML += `<p>已导入CSV：${file.name}</p>`;
+    try{
+        const text = await file.text();
+        parseCsvToData(text);
+        // 从csv文本重新生成blob，保证下载按钮可用
+        resultBlob = new Blob([text],{type:'text/csv;charset=utf-8'});
+
+        buildWeekSelect();
+        renderWeekTable(1);
+
+        statusDom.innerHTML = `<p style="color:green">✅ CSV导入完成，请在下方查看统计表格</p>`;
+        downloadBtn.style.display = "inline-block";
+        weekControl.style.display = "block";
+        tableWrap.style.display = "block";
+    }catch(err){
+        statusDom.innerHTML = `<p style="color:red">❌ CSV解析失败:${err.message}</p>`
+    }
+})
+
+// 解析PDF按钮
+parseBtn.addEventListener('click', async ()=>{
+    if(pdfFileList.length === 0){
+        statusDom.innerHTML = `<p style="color:red">❌ 请先点击【添加PDF】选择文件</p>`;
+        return;
+    }
+    // 只清空旧结果，保留pdfFileList、保留fileListDom（文件列表不动）
+    resultBlob = null;
+    allData = [];
+    maxWeek = 0;
+    downloadBtn.style.display = "none";
+    weekControl.style.display = "none";
+    tableWrap.style.display = "none";
+    statTableBody.innerHTML = "";
+    suggestText.innerText = "";
+
+    // 状态消息直接替换statusDom，不会追加堆叠
+    statusDom.innerHTML = "<p>⏳ 正在上传并解析，请稍候……</p>";
+
+    const formData = new FormData();
+    for(const f of pdfFileList){
+        formData.append("pdf_files", f);
+    }
+
+    try{
+        const resp = await fetch("http://127.0.0.1:8000/upload", {
+            method:"POST",
+            body:formData
+        })
+        if(!resp.ok) throw new Error("后端解析失败，请检查PDF");
+
+        resultBlob = await resp.blob();
+        // 读取CSV文本
+        const reader = new FileReader();
+        reader.onload = function(e){
+            const csvText = e.target.result;
+            parseCsvToData(csvText);
+            buildWeekSelect();
+            renderWeekTable(1); // 默认渲染第1周
+
+            statusDom.innerHTML = `<p style="color:green">✅ 解析完成，请在下方查看统计表格</p>`;
+            downloadBtn.style.display = "inline-block";
+            weekControl.style.display = "block";
+            tableWrap.style.display = "block";
+        }
+        reader.readAsText(resultBlob,"utf-8");
+
+    }catch(err){
+        statusDom.innerHTML = `<p style="color:red">❌ ${err.message}</p>`
+    }
+})
+
+// 下载按钮
+downloadBtn.addEventListener('click',()=>{
+    if(!resultBlob){
+        alert("暂无解析结果，请先执行解析或者导入CSV");
+        return;
+    }
+    const downloadUrl = URL.createObjectURL(resultBlob);
+    const a = document.createElement("a");
+    a.href = downloadUrl;
+    a.download = "班级课表逐周统计结果.csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(downloadUrl);
+})
+
+/**
+ * 简单解析CSV文本，转js数组
+ */
+function parseCsvToData(csvText){
+    const lines = csvText.split('\n').filter(line=>line.trim()!=='');
+    if(lines.length < 2){
+        throw new Error("CSV文件内容为空或者格式不对");
+    }
+    // 校验表头，简单判断是不是我们导出的csv
+    const header = lines[0].split(',');
+    if(!header.includes("周次")||!header.includes("星期")||!header.includes("节次")){
+        throw new Error("不是本工具导出的课表统计CSV");
+    }
+    allData = [];
+    maxWeek = 0;
+    for(let i=1;i<lines.length;i++){
+        const rowArr = lines[i].split(',');
+        // 防止行残缺
+        if(rowArr.length<6) continue;
+        const item = {
+            周次: Number(rowArr[0]),
+            星期: rowArr[1],
+            节次: rowArr[2],
+            有课人数: Number(rowArr[3]),
+            空闲人数: Number(rowArr[4]),
+            空闲名单: rowArr[5]??""
+        }
+        allData.push(item);
+        if(item.周次>maxWeek) maxWeek = item.周次;
+    }
+    if(allData.length ===0){
+        throw new Error("CSV内没有有效统计数据");
+    }
+}
+
+/**
+ * 根据实际最大周数构建下拉选择框
+ */
+function buildWeekSelect(){
+    weekSelect.innerHTML = "";
+    for(let w=1; w<=maxWeek; w++){
+        const opt = document.createElement('option');
+        opt.value = w;
+        opt.innerText = `第${w}周`;
+        weekSelect.appendChild(opt);
+    }
+    weekSelect.value = "1"; // 默认选中第一周
+}
+
+/**
+ * 渲染矩阵表格 + 班会推荐文本
+ */
+function renderWeekTable(targetWeek){
+    tableTitle.innerText = `第${targetWeek}周空闲统计表`;
+    statTableBody.innerHTML = "";
+
+    // 取出该周全部数据
+    const weekAll = allData.filter(d=>d.周次 === targetWeek);
+
+    // 构建映射：key = "星期|节次"
+    const map = {};
+    for(const r of weekAll){
+        map[`${r.星期}|${r.节次}`] = r;
+    }
+
+    // 循环每一个节次生成一行
+    for(const period of PERIODS){
+        const tr = document.createElement('tr');
+        // 第一列：节次
+        let html = `<td>${period}</td>`;
+
+        for(const day of WEEK_DAYS){
+            const cell = map[`${day}|${period}`];
+            if(cell){
+                const text = `有课${cell.有课人数}人 / 空闲${cell.空闲人数}人`;
+                if(cell.有课人数 === 0){
+                    html += `<td class="free-all">${text}</td>`;
+                }else{
+                    html += `<td>${text}</td>`;
+                }
+            }else{
+                html += `<td>-</td>`;
+            }
+        }
+        tr.innerHTML = html;
+        statTableBody.appendChild(tr);
+    }
+
+    // ---- 计算全班空闲时间段，生成班会推荐 ----
+    const freeItems = weekAll.filter(x => x.有课人数 === 0);
+    if(freeItems.length > 0){
+        let txtLines = [];
+        for(const it of freeItems){
+            txtLines.push(`• ${it.星期} 第${it.节次}节`);
+        }
+        suggestText.innerHTML = txtLines.join("<br/>");
+    }else{
+        suggestText.innerText = "⚠️ 本周没有全班都空闲的时间段";
+    }
+}
+
+// 下拉切换周次事件
+weekSelect.addEventListener('change',function(){
+    const w = Number(this.value);
+    renderWeekTable(w);
+})
+</script>
+</body>
+</html>
