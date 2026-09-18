@@ -5,6 +5,7 @@ from io import BytesIO, StringIO
 import csv
 from parse_schedule import parse_schedule_from_bytes
 from merge_schedule import build_busy_matrix, print_report, week_in_range
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -35,7 +36,7 @@ def max_week_of_semester(students):
     return max_w
 
 
-@app.post("/upload")
+@app.post("/api/upload")
 async def upload_pdfs(pdf_files: list[UploadFile] = File(...)):
     students = {}
     for upload_file in pdf_files:
@@ -76,6 +77,8 @@ async def upload_pdfs(pdf_files: list[UploadFile] = File(...)):
 
     return StreamingResponse(output_buffer, media_type="text/csv", headers=headers)
 
+# .. 向上跳一级目录，然后进入frontend文件夹
+app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
