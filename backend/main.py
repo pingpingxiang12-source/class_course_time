@@ -77,8 +77,15 @@ async def upload_pdfs(pdf_files: list[UploadFile] = File(...)):
 
     return StreamingResponse(output_buffer, media_type="text/csv", headers=headers)
 
-# .. 向上跳一级目录，然后进入frontend文件夹
-app.mount("/", StaticFiles(directory="../frontend", html=True), name="static")
+import os
+from fastapi.staticfiles import StaticFiles
+
+# 拿到main.py所在目录的绝对路径
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 拼接frontend的绝对路径
+FRONTEND_DIR = os.path.join(BASE_DIR, "..", "frontend")
+app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="static")
+
 
 if __name__ == "__main__":
     import uvicorn
