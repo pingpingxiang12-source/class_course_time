@@ -260,7 +260,7 @@ parseBtn.addEventListener('click', async ()=>{
     }
 
     try{
-        const resp = await fetch("http://127.0.0.1:8000/upload", {
+        const resp = await fetch("/api/upload", {
             method:"POST",
             body:formData
         })
