@@ -71,12 +71,19 @@ def build_busy_matrix(students, week_num=None):
     return {k: sorted(v) for k, v in busy.items()}
 
 
-def print_report(students, busy, week_num=None):
+def print_report(students, busy, week_num=None, verbose=False):
+    """构建每周的统计行。
+
+    默认不向 stdout 打印：本函数在 Web 请求链路里被调用，
+    控制台编码不是 UTF-8 时（例如 Windows 本地以 GBK 运行）打印 emoji 会抛
+    UnicodeEncodeError，直接导致接口 500。命令行使用时可传 verbose=True 还原表格输出。
+    """
     total = len(students)
     title = f"（第 {week_num} 周）" if week_num else "（未指定具体周次，统计全学期所有课程）"
-    print(f"\n全班共 {total} 人 {title}\n")
-    print(f"{'时间段':<12}{'有课人数':<10}空闲人数  空闲名单")
-    print('-' * 70)
+    if verbose:
+        print(f"\n全班共 {total} 人 {title}\n")
+        print(f"{'时间段':<12}{'有课人数':<10}空闲人数  空闲名单")
+        print('-' * 70)
 
     rows = []
     for day in WEEKDAYS:
@@ -89,20 +96,22 @@ def print_report(students, busy, week_num=None):
                 '有课人数': len(occupied), '空闲人数': free_count,
                 '空闲名单': ','.join(free_names)
             })
-            mark = '⭐' if free_count == total else ''
-            print(f"{day} {period:<8}{len(occupied):<10}{free_count:<10}{mark}")
+            if verbose:
+                mark = '[*]' if free_count == total else ''
+                print(f"{day} {period:<8}{len(occupied):<10}{free_count:<10}{mark}")
 
-    # 推荐：全班都空闲的时间段
-    best = [r for r in rows if r['空闲人数'] == total]
-    print('\n=== 全班都没课的时间段（最适合开班会）===')
-    if best:
-        for r in best:
-            print(f"  {r['星期']} 第{r['节次']}节")
-    else:
-        print("  没有全班都空闲的时间段，建议看下面接近满员空闲的时段：")
-        rows_sorted = sorted(rows, key=lambda r: -r['空闲人数'])
-        for r in rows_sorted[:5]:
-            print(f"  {r['星期']} 第{r['节次']}节  空闲 {r['空闲人数']}/{total} 人")
+    if verbose:
+        # 推荐：全班都空闲的时间段
+        best = [r for r in rows if r['空闲人数'] == total]
+        print('\n=== 全班都没课的时间段（最适合开班会）===')
+        if best:
+            for r in best:
+                print(f"  {r['星期']} 第{r['节次']}节")
+        else:
+            print("  没有全班都空闲的时间段，建议看下面接近满员空闲的时段：")
+            rows_sorted = sorted(rows, key=lambda r: -r['空闲人数'])
+            for r in rows_sorted[:5]:
+                print(f"  {r['星期']} 第{r['节次']}节  空闲 {r['空闲人数']}/{total} 人")
 
     return rows
 
@@ -128,7 +137,7 @@ def main():
         return
 
     busy = build_busy_matrix(students, args.week)
-    rows = print_report(students, busy, args.week)
+    rows = print_report(students, busy, args.week, verbose=True)
     save_csv(rows, args.output)
 
 

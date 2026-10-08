@@ -132,6 +132,57 @@ const suggestText = document.getElementById('suggestText');
 const PERIODS = ['1-2','3-4','5-6','7-8','9-10','11-12'];
 const WEEK_DAYS = ['星期一','星期二','星期三','星期四','星期五','星期六','星期日'];
 
+/**
+ * 后端接口基地址。
+ * 默认同源（前后端由同一个 Render 服务提供），
+ * 如果前端单独部署到 Vercel / GitHub Pages，把 window.COURSE_TOOL_API_BASE 设成后端地址即可。
+ */
+const API_BASE = (window.COURSE_TOOL_API_BASE || '').replace(/\/+$/, '');
+
+/**
+ * 把后端返回的错误内容转成可读文案。
+ * 后端出错时返回 JSON（{detail: "..."}），这里优先展示 detail。
+ */
+async function readErrorDetail(resp, fallback){
+    try{
+        const text = await resp.text();
+        if(!text) return fallback;
+        try{
+            const data = JSON.parse(text);
+            if(data && data.detail) return data.detail;
+        }catch(_){ /* 非 JSON，按纯文本处理 */ }
+        return text.slice(0, 300);
+    }catch(_){
+        return fallback;
+    }
+}
+
+/**
+ * 按 BOM 判断编码解码文本。
+ * 本工具导出的 CSV 带 UTF-8 BOM；若用户用 Excel/WPS 转存过，可能是 GBK。
+ */
+function decodeCsvBuffer(arrayBuffer){
+    const bytes = new Uint8Array(arrayBuffer);
+    const hasUtf8Bom = bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF;
+    if(hasUtf8Bom){
+        return new TextDecoder('utf-8').decode(bytes);
+    }
+    try{
+        return new TextDecoder('utf-8', {fatal:true}).decode(bytes);
+    }catch(_){
+        return new TextDecoder('gbk').decode(bytes);
+    }
+}
+
+/**
+ * 免费实例休眠后首次请求需要冷启动，超过 10 秒提示用户耐心等待。
+ */
+function startColdStartHint(statusEl){
+    return setTimeout(function(){
+        statusEl.innerHTML = "<p>⏳ 免费实例正在冷启动，通常需要 30~60 秒，请勿关闭页面……</p>";
+    }, 10000);
+}
+
 // 全局状态：PDF文件列表，支持追加
 let pdfFileList = [];
 let resultBlob = null;
@@ -218,7 +269,8 @@ csvImportInput.addEventListener('change',async function(){
     statusDom.innerHTML = `<p>正在读取CSV文件……</p>`;
     fileListDom.innerHTML += `<p>已导入CSV：${file.name}</p>`;
     try{
-        const text = await file.text();
+        const buffer = await file.arrayBuffer();
+        const text = decodeCsvBuffer(buffer);
         parseCsvToData(text);
         // 从csv文本重新生成blob，保证下载按钮可用
         resultBlob = new Blob([text],{type:'text/csv;charset=utf-8'});
@@ -253,6 +305,7 @@ parseBtn.addEventListener('click', async ()=>{
 
     // 状态消息直接替换statusDom，不会追加堆叠
     statusDom.innerHTML = "<p>⏳ 正在上传并解析，请稍候……</p>";
+    const coldStartTimer = startColdStartHint(statusDom);
 
     const formData = new FormData();
     for(const f of pdfFileList){
@@ -260,11 +313,16 @@ parseBtn.addEventListener('click', async ()=>{
     }
 
     try{
-        const resp = await fetch("/api/upload", {
+        const resp = await fetch(API_BASE + "/api/upload", {
             method:"POST",
             body:formData
         })
-        if(!resp.ok) throw new Error("后端解析失败，请检查PDF");
+        clearTimeout(coldStartTimer);
+
+        if(!resp.ok){
+            const detail = await readErrorDetail(resp, "后端解析失败，请检查PDF文件");
+            throw new Error(detail);
+        }
 
         resultBlob = await resp.blob();
         // 读取CSV文本
@@ -275,7 +333,13 @@ parseBtn.addEventListener('click', async ()=>{
             buildWeekSelect();
             renderWeekTable(1); // 默认渲染第1周
 
-            statusDom.innerHTML = `<p style="color:green">✅ 解析完成，请在下方查看统计表格</p>`;
+            const failedCount = Number(resp.headers.get("X-Failed-Count") || 0);
+            const studentCount = Number(resp.headers.get("X-Student-Count") || 0);
+            let msg = `✅ 解析完成（共 ${studentCount} 人），请在下方查看统计表格`;
+            if(failedCount > 0){
+                msg += `<br/><span style="color:#b45309">⚠️ 有 ${failedCount} 个文件未能解析，已跳过</span>`;
+            }
+            statusDom.innerHTML = `<p style="color:green">${msg}</p>`;
             downloadBtn.style.display = "inline-block";
             weekControl.style.display = "block";
             tableWrap.style.display = "block";
@@ -283,7 +347,12 @@ parseBtn.addEventListener('click', async ()=>{
         reader.readAsText(resultBlob,"utf-8");
 
     }catch(err){
-        statusDom.innerHTML = `<p style="color:red">❌ ${err.message}</p>`
+        clearTimeout(coldStartTimer);
+        let msg = err.message || "请求失败";
+        if(msg === "Failed to fetch"){
+            msg = "无法连接服务器，请检查网络、后端地址，或稍后重试（免费实例冷启动可能失败一次）";
+        }
+        statusDom.innerHTML = `<p style="color:red">❌ ${msg}</p>`
     }
 })
 
@@ -304,6 +373,36 @@ downloadBtn.addEventListener('click',()=>{
 })
 
 /**
+ * 按标准 CSV 规则切分一行：支持双引号包裹的字段（字段内可含逗号、换行、"" 转义）。
+ * 后端在姓名等字段含逗号时会加引号，直接按逗号切会错列或丢行。
+ */
+function parseCsvLine(line){
+    const cells = [];
+    let cur = '';
+    let inQuotes = false;
+    for(let i=0;i<line.length;i++){
+        const ch = line[i];
+        if(inQuotes){
+            if(ch === '"'){
+                if(line[i+1] === '"'){ cur += '"'; i++; }
+                else{ inQuotes = false; }
+            }else{
+                cur += ch;
+            }
+        }else if(ch === '"' && cur === ''){
+            inQuotes = true;
+        }else if(ch === ','){
+            cells.push(cur);
+            cur = '';
+        }else{
+            cur += ch;
+        }
+    }
+    cells.push(cur);
+    return cells;
+}
+
+/**
  * 简单解析CSV文本，转js数组
  */
 function parseCsvToData(csvText){
@@ -311,15 +410,15 @@ function parseCsvToData(csvText){
     if(lines.length < 2){
         throw new Error("CSV文件内容为空或者格式不对");
     }
-    // 校验表头，简单判断是不是我们导出的csv
-    const header = lines[0].split(',');
+    // 校验表头，简单判断是不是我们导出的csv（兼容带引号与 BOM）
+    const header = parseCsvLine(lines[0]).map(h=>h.replace(/^\uFEFF/,'').trim());
     if(!header.includes("周次")||!header.includes("星期")||!header.includes("节次")){
         throw new Error("不是本工具导出的课表统计CSV");
     }
     allData = [];
     maxWeek = 0;
     for(let i=1;i<lines.length;i++){
-        const rowArr = lines[i].split(',');
+        const rowArr = parseCsvLine(lines[i]);
         // 防止行残缺
         if(rowArr.length<6) continue;
         const item = {
@@ -330,6 +429,7 @@ function parseCsvToData(csvText){
             空闲人数: Number(rowArr[4]),
             空闲名单: rowArr[5]??""
         }
+        if(!item.星期 || Number.isNaN(item.周次)) continue;
         allData.push(item);
         if(item.周次>maxWeek) maxWeek = item.周次;
     }

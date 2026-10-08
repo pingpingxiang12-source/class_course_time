@@ -1,0 +1,29 @@
+# 构建镜像时排除的文件，减小构建上下文
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# 本地测试用虚拟环境
+.venv
+.venv-*
+venv
+env
+
+# Python 缓存与临时产物
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+
+# 文档与无关文件
+README.md
+LICENSE
+Profile
+*.md
+
+# 一次性诊断/恢复产物
+*-acl-recovery
+piptest

@@ -1,0 +1,20 @@
+# Render Blueprint —— 一键部署班级课表统计工具（免费实例可跑）
+# 用法：Render Dashboard -> New -> Blueprint -> 选择本仓库，即可按此文件创建服务。
+services:
+  - type: web
+    name: class-course-time
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: singapore # 国内访问延迟较低；可选 oregon / ohio / virginia / frankfurt
+    healthCheckPath: /healthz
+    autoDeployTrigger: commit
+    envVars:
+      - key: PORT
+        value: 10000 # Render 默认注入 PORT；显式声明便于本地/其它平台复用
+      - key: WEB_CONCURRENCY
+        value: 1 # 免费实例 0.1 CPU / 512MB，单进程最稳
+      - key: MAX_UPLOAD_BYTES
+        value: 41943040 # 单次上传总大小上限 40MB，防止免费实例 OOM
+      - key: MAX_UPLOAD_FILES
+        value: 80
